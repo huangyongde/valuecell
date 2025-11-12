@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 
 from ..models import (
     Constraints,
+    MarketType,
     PortfolioView,
     PositionSnapshot,
     TradeHistoryEntry,
@@ -30,6 +31,7 @@ class InMemoryPortfolioService(PortfolioService):
         self,
         initial_capital: float,
         trading_mode: TradingMode,
+        market_type: MarketType,
         constraints: Optional[Constraints] = None,
         strategy_id: Optional[str] = None,
     ) -> None:
@@ -49,6 +51,7 @@ class InMemoryPortfolioService(PortfolioService):
             buying_power=initial_capital,
         )
         self._trading_mode = trading_mode
+        self._market_type = market_type
 
     def get_view(self) -> PortfolioView:
         self._view.ts = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -98,8 +101,16 @@ class InMemoryPortfolioService(PortfolioService):
 
             # Handle position quantity transitions and avg price
             if new_qty == 0.0:
-                # Fully closed
-                self._view.positions.pop(symbol, None)
+                # Fully closed — do NOT remove the position immediately.
+                # Keep a tombstone snapshot so downstream callers (UI / API)
+                # that poll holdings immediately after execution can still see
+                # the just-closed position. Mark it closed with a timestamp.
+                position.quantity = 0.0
+                position.mark_price = price
+                # preserve avg_price and entry_ts for auditing; record closed_ts
+                position.closed_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+                position.unrealized_pnl = 0.0
+                position.unrealized_pnl_pct = None
             elif current_qty == 0.0:
                 # Opening new position
                 position.quantity = new_qty
@@ -219,11 +230,16 @@ class InMemoryPortfolioService(PortfolioService):
         equity = self._view.cash + net
         self._view.total_value = equity
 
-        # Approximate buying power using max leverage constraint
-        max_lev = (
-            float(self._view.constraints.max_leverage)
-            if (self._view.constraints and self._view.constraints.max_leverage)
-            else 1.0
-        )
-        buying_power = max(0.0, equity * max_lev - gross)
-        self._view.buying_power = buying_power
+        # Approximate buying power using market type policy
+        if self._market_type == MarketType.SPOT:
+            # Spot: cash-only buying power
+            self._view.buying_power = max(0.0, float(self._view.cash))
+        else:
+            # Derivatives: margin-based buying power
+            max_lev = (
+                float(self._view.constraints.max_leverage)
+                if (self._view.constraints and self._view.constraints.max_leverage)
+                else 1.0
+            )
+            buying_power = max(0.0, equity * max_lev - gross)
+            self._view.buying_power = buying_power

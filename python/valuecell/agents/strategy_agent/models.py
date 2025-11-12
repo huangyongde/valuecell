@@ -192,11 +192,14 @@ class TradingConfig(BaseModel):
         gt=0,
     )
     template_id: Optional[str] = Field(
-        default=None, description="Strategy template identifier to guide the agent"
+        default=None, description="Saved prompt template id to use for this strategy"
+    )
+    prompt_text: Optional[str] = Field(
+        default=None,
+        description="Direct prompt text to use (overrides template_id if provided)",
     )
     custom_prompt: Optional[str] = Field(
-        default=None,
-        description="Optional custom prompt to customize strategy behavior",
+        default=None, description="Custom prompt text to use alongside prompt_text"
     )
 
     cap_factor: float = Field(
@@ -232,6 +235,39 @@ class UserRequest(BaseModel):
     trading_config: TradingConfig = Field(
         ..., description="Trading strategy configuration"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_market_type(cls, data):
+        """Infer market_type from trading_config.max_leverage when not provided.
+
+        Rule: if market_type is missing (not present in request), then
+        - max_leverage <= 1.0 -> SPOT
+        - max_leverage > 1.0  -> SWAP
+        """
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        ex_cfg = dict(values.get("exchange_config") or {})
+        # Only infer when market_type is not provided by the user
+        mt_value = ex_cfg.get("market_type")
+        mt_missing = (
+            ("market_type" not in ex_cfg)
+            or (mt_value is None)
+            or (str(mt_value).strip() == "")
+        )
+        if mt_missing:
+            tr_cfg = dict(values.get("trading_config") or {})
+            ml_raw = tr_cfg.get("max_leverage")
+            try:
+                ml = (
+                    float(ml_raw) if ml_raw is not None else float(DEFAULT_MAX_LEVERAGE)
+                )
+            except Exception:
+                ml = float(DEFAULT_MAX_LEVERAGE)
+            ex_cfg["market_type"] = MarketType.SPOT if ml <= 1.0 else MarketType.SWAP
+            values["exchange_config"] = ex_cfg
+        return values
 
 
 # =========================
@@ -280,7 +316,13 @@ class FeatureVector(BaseModel):
         default_factory=dict, description="Feature name to numeric value"
     )
     meta: Optional[Dict[str, float | int | str]] = Field(
-        default=None, description="Optional metadata (e.g., window lengths)"
+        default=None,
+        description=(
+            "Optional metadata about the source window: keys MAY include interval, "
+            "window_start_ts, window_end_ts (ms), count/num_points, and any feature "
+            "family identifiers. Feature computers SHOULD populate these so downstream "
+            "components can reason about freshness and coverage."
+        ),
     )
 
 
@@ -351,6 +393,9 @@ class PositionSnapshot(BaseModel):
     )
     entry_ts: Optional[int] = Field(
         default=None, description="Entry timestamp (ms) for the current position"
+    )
+    closed_ts: Optional[int] = Field(
+        default=None, description="Close timestamp (ms) for recently closed positions"
     )
     pnl_pct: Optional[float] = Field(
         default=None, description="Unrealized P&L as a percent of position value"
@@ -436,6 +481,9 @@ class LlmPlanProposal(BaseModel):
 
     ts: int
     items: List[LlmDecisionItem] = Field(default_factory=list)
+    rationale: Optional[str] = Field(
+        default=None, description="Optional natural language rationale"
+    )
 
 
 class PriceMode(str, Enum):

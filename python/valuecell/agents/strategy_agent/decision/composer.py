@@ -4,20 +4,26 @@ import json
 import math
 from typing import Dict, List, Optional
 
+from agno.agent import Agent as AgnoAgent
 from loguru import logger
 from pydantic import ValidationError
+
+from valuecell.utils import env as env_utils
+from valuecell.utils import model as model_utils
 
 from ..models import (
     ComposeContext,
     Constraints,
     LlmDecisionAction,
     LlmPlanProposal,
+    MarketType,
     PriceMode,
     TradeInstruction,
     TradeSide,
     UserRequest,
 )
 from .interfaces import Composer
+from .system_prompt import SYSTEM_PROMPT
 
 
 class LlmComposer(Composer):
@@ -49,16 +55,13 @@ class LlmComposer(Composer):
 
     async def compose(self, context: ComposeContext) -> List[TradeInstruction]:
         prompt = self._build_llm_prompt(context)
-        logger.debug(
-            "Built LLM prompt for compose_id={}: {}",
-            context.compose_id,
-            prompt,
-        )
         try:
             plan = await self._call_llm(prompt)
             if not plan.items:
-                logger.error(
-                    "LLM returned empty plan for compose_id={}", context.compose_id
+                logger.info(
+                    "LLM returned empty plan for compose_id={} with rationale={}",
+                    context.compose_id,
+                    plan.rationale,
                 )
                 return []
         except ValidationError as exc:
@@ -74,32 +77,198 @@ class LlmComposer(Composer):
     # Prompt + LLM helpers
 
     def _build_llm_prompt(self, context: ComposeContext) -> str:
-        """Serialize compose context into a textual prompt for the LLM."""
+        """Serialize a concise, structured prompt for the LLM (low-noise).
 
-        payload = {
-            "strategy_prompt": context.prompt_text,
-            "compose_id": context.compose_id,
-            "timestamp": context.ts,
-            "portfolio": context.portfolio.model_dump(mode="json"),
-            "market_snapshot": context.market_snapshot or {},
-            "digest": context.digest.model_dump(mode="json"),
-            "features": [vector.model_dump(mode="json") for vector in context.features],
-            # Constraints live on the portfolio view; prefer typed model_dump when present
-            "constraints": (
-                context.portfolio.constraints.model_dump(mode="json", exclude_none=True)
-                if context.portfolio and context.portfolio.constraints
-                else {}
-            ),
-        }
+        Design goals (inspired by the prompt doc):
+        - Keep only the most actionable state: prices, compact tech signals, positions, constraints
+        - Avoid verbose/raw dumps; drop nulls and unused fields
+        - Encourage risk-aware decisions and allow NOOP when no edge
+        - Preserve our output contract (LlmPlanProposal)
+        """
 
-        instructions = (
-            "You are a trading strategy planner. Analyze the JSON context and "
-            "produce a structured plan that aligns with the LlmPlanProposal "
-            "schema (items array with instrument, action, target_qty, rationale, "
-            "confidence). Focus on risk-aware, executable decisions."
+        # Helper: recursively drop keys with None values and empty dict/list
+        def _prune_none(obj):
+            if isinstance(obj, dict):
+                pruned = {k: _prune_none(v) for k, v in obj.items() if v is not None}
+                return {k: v for k, v in pruned.items() if v not in (None, {}, [])}
+            if isinstance(obj, list):
+                pruned = [_prune_none(v) for v in obj]
+                return [v for v in pruned if v not in (None, {}, [])]
+            return obj
+
+        # Compact portfolio snapshot
+        pv = context.portfolio
+        positions = []
+        for sym, snap in pv.positions.items():
+            positions.append(
+                _prune_none(
+                    {
+                        "symbol": sym,
+                        "qty": float(snap.quantity),
+                        "avg_px": snap.avg_price,
+                        "mark_px": snap.mark_price,
+                        "unrealized_pnl": snap.unrealized_pnl,
+                        "lev": snap.leverage,
+                        "entry_ts": snap.entry_ts,
+                        "type": getattr(snap, "trade_type", None),
+                    }
+                )
+            )
+
+        # Constraints (only non-empty)
+        constraints = (
+            pv.constraints.model_dump(mode="json", exclude_none=True)
+            if pv and pv.constraints
+            else {}
         )
 
-        return f"{instructions}\n\nContext:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        # --- Summary & Risk Flags ---
+        # Aggregate win_rate across instruments (weighted by trade_count)
+        total_trades = 0
+        weighted_win = 0.0
+        for entry in (context.digest.by_instrument or {}).values():
+            tc = int(getattr(entry, "trade_count", 0) or 0)
+            wr = getattr(entry, "win_rate", None)
+            if tc and wr is not None:
+                total_trades += tc
+                weighted_win += float(wr) * tc
+        agg_win_rate = (weighted_win / total_trades) if total_trades > 0 else None
+
+        # Active positions
+        active_positions = sum(
+            1
+            for snap in pv.positions.values()
+            if abs(float(getattr(snap, "quantity", 0.0) or 0.0)) > 0.0
+        )
+
+        # Unrealized pnl pct relative to total_value (if available)
+        unrealized = getattr(pv, "total_unrealized_pnl", None)
+        total_value = getattr(pv, "total_value", None)
+        unrealized_pct = (
+            (float(unrealized) / float(total_value) * 100.0)
+            if (unrealized is not None and total_value)
+            else None
+        )
+
+        # Buying power and leverage risk assessment
+        risk_flags: List[str] = []
+        try:
+            equity, allowed_lev, constraints_typed, projected_gross, price_map2 = (
+                self._init_buying_power_context(context)
+            )
+            max_positions_cfg = constraints.get("max_positions")
+            if max_positions_cfg:
+                try:
+                    if active_positions / float(max_positions_cfg) >= 0.8:
+                        risk_flags.append("approaching_max_positions")
+                except Exception:
+                    pass
+
+            avail_bp = max(
+                0.0, float(equity) * float(allowed_lev) - float(projected_gross)
+            )
+            denom = (
+                float(equity) * float(allowed_lev) if equity and allowed_lev else None
+            )
+            if denom and denom > 0:
+                bp_ratio = avail_bp / denom
+                if bp_ratio <= 0.1:
+                    risk_flags.append("low_buying_power")
+
+            # High leverage usage check per-position against max_leverage
+            max_lev_cfg = constraints.get("max_leverage")
+            if max_lev_cfg:
+                try:
+                    max_used_ratio = 0.0
+                    for snap in pv.positions.values():
+                        lev = getattr(snap, "leverage", None)
+                        if lev is not None and float(max_lev_cfg) > 0:
+                            max_used_ratio = max(
+                                max_used_ratio, float(lev) / float(max_lev_cfg)
+                            )
+                    if max_used_ratio >= 0.8:
+                        risk_flags.append("high_leverage_usage")
+                except Exception:
+                    pass
+        except Exception:
+            # If any issue computing context, skip risk flags additions silently
+            pass
+
+        summary = _prune_none(
+            {
+                "active_positions": active_positions,
+                "max_positions": constraints.get("max_positions"),
+                "total_value": total_value,
+                "cash": pv.cash,
+                "unrealized_pnl": unrealized,
+                "unrealized_pnl_pct": unrealized_pct,
+                "win_rate": agg_win_rate,
+                "trade_count": total_trades,
+                # Include available buying power if computed
+                # This helps the model adjust aggressiveness
+            }
+        )
+
+        # Digest (minimal useful stats)
+        digest_compact: Dict[str, dict] = {}
+        for sym, entry in (context.digest.by_instrument or {}).items():
+            digest_compact[sym] = _prune_none(
+                {
+                    "trade_count": entry.trade_count,
+                    "realized_pnl": entry.realized_pnl,
+                    "win_rate": entry.win_rate,
+                    "avg_holding_ms": entry.avg_holding_ms,
+                    "last_trade_ts": entry.last_trade_ts,
+                }
+            )
+
+        # Environment summary
+        env = _prune_none(
+            {
+                "exchange_id": self._request.exchange_config.exchange_id,
+                "trading_mode": str(self._request.exchange_config.trading_mode),
+                "max_leverage": constraints.get("max_leverage"),
+                "max_positions": constraints.get("max_positions"),
+            }
+        )
+
+        # Preserve original feature structure (do not prune fields inside FeatureVector)
+        features_payload = [fv.model_dump(mode="json") for fv in context.features]
+
+        payload = _prune_none(
+            {
+                "strategy_prompt": context.prompt_text,
+                "summary": summary,
+                "risk_flags": risk_flags or None,
+                "env": env,
+                "compose_id": context.compose_id,
+                "ts": context.ts,
+                "market": context.market_snapshot,
+                "features": features_payload,
+                "portfolio": _prune_none(
+                    {
+                        "strategy_id": context.strategy_id,
+                        "cash": pv.cash,
+                        "total_value": getattr(pv, "total_value", None),
+                        "total_unrealized_pnl": getattr(
+                            pv, "total_unrealized_pnl", None
+                        ),
+                        "positions": positions,
+                    }
+                ),
+                "constraints": constraints,
+                "digest": digest_compact,
+            }
+        )
+
+        instructions = (
+            "Per-cycle guidance: Read the Context JSON and form a concise plan. "
+            "If any arrays appear, they are ordered OLDEST → NEWEST (last = most recent). "
+            "Respect constraints, buying power, and risk_flags; prefer NOOP when edge is unclear. "
+            "Manage existing positions first; propose new exposure only with clear, trend-aligned confluence and within limits. Keep rationale brief."
+        )
+
+        return f"{instructions}\n\nContext:\n{json.dumps(payload, ensure_ascii=False)}"
 
     async def _call_llm(self, prompt: str) -> LlmPlanProposal:
         """Invoke an LLM asynchronously and parse the response into LlmPlanProposal.
@@ -111,19 +280,22 @@ class LlmComposer(Composer):
         `LlmPlanProposal`.
         """
 
-        from agno.agent import Agent as AgnoAgent
-
-        from valuecell.utils.model import create_model_with_provider
-
         cfg = self._request.llm_model_config
-        model = create_model_with_provider(
+        model = model_utils.create_model_with_provider(
             provider=cfg.provider,
             model_id=cfg.model_id,
             api_key=cfg.api_key,
         )
 
         # Wrap model in an Agent (consistent with parser_agent usage)
-        agent = AgnoAgent(model=model, output_schema=LlmPlanProposal, markdown=False)
+        agent = AgnoAgent(
+            model=model,
+            output_schema=LlmPlanProposal,
+            markdown=False,
+            instructions=[SYSTEM_PROMPT],
+            use_json_mode=model_utils.model_should_use_json_mode(model),
+            debug_mode=env_utils.agent_debug_mode_enabled(),
+        )
         response = await agent.arun(prompt)
         content = getattr(response, "content", None) or response
         logger.debug("Received LLM response {}", content)
@@ -146,19 +318,28 @@ class LlmComposer(Composer):
             max_leverage=self._request.trading_config.max_leverage,
         )
 
-        # Compute equity (prefer total_value, fallback to cash + net_exposure)
-        if getattr(context.portfolio, "total_value", None) is not None:
-            equity = float(context.portfolio.total_value or 0.0)
+        # Compute equity based on market type:
+        if self._request.exchange_config.market_type == MarketType.SPOT:
+            # Spot: use available cash as equity
+            equity = float(getattr(context.portfolio, "cash", 0.0) or 0.0)
         else:
-            cash = float(getattr(context.portfolio, "cash", 0.0) or 0.0)
-            net = float(getattr(context.portfolio, "net_exposure", 0.0) or 0.0)
-            equity = cash + net
+            # Derivatives: use portfolio equity (cash + net exposure), or total_value if provided
+            if getattr(context.portfolio, "total_value", None) is not None:
+                equity = float(context.portfolio.total_value or 0.0)
+            else:
+                cash = float(getattr(context.portfolio, "cash", 0.0) or 0.0)
+                net = float(getattr(context.portfolio, "net_exposure", 0.0) or 0.0)
+                equity = cash + net
 
-        allowed_lev = (
-            float(constraints.max_leverage)
-            if constraints.max_leverage is not None
-            else 1.0
-        )
+        # Market-type leverage policy: SPOT -> 1.0; Derivatives -> constraints
+        if self._request.exchange_config.market_type == MarketType.SPOT:
+            allowed_lev = 1.0
+        else:
+            allowed_lev = (
+                float(constraints.max_leverage)
+                if constraints.max_leverage is not None
+                else 1.0
+            )
 
         # Initialize projected gross exposure
         price_map = context.market_snapshot or {}
@@ -263,7 +444,12 @@ class LlmComposer(Composer):
             )
             final_qty = qty
         else:
-            avail_bp = max(0.0, equity * allowed_lev - projected_gross)
+            if self._request.exchange_config.market_type == MarketType.SPOT:
+                # Spot: cash-only buying power
+                avail_bp = max(0.0, equity)
+            else:
+                # Derivatives: margin-based buying power
+                avail_bp = max(0.0, equity * allowed_lev - projected_gross)
             # When buying power is exhausted, we should still allow reductions/closures.
             # Set additional purchasable units to 0 but proceed with piecewise logic
             # so that de-risking trades are not blocked.
@@ -353,6 +539,12 @@ class LlmComposer(Composer):
             target_qty = self._resolve_target_quantity(
                 item, current_qty, max_position_qty
             )
+            # SPOT long-only: do not allow negative target quantities
+            if (
+                self._request.exchange_config.market_type == MarketType.SPOT
+                and target_qty < 0
+            ):
+                target_qty = 0.0
             # Enforce: single-lot per symbol and no direct flip. If target flips side,
             # split into two sub-steps: first flat to 0, then open to target side.
             sub_targets: List[float] = []
@@ -397,7 +589,11 @@ class LlmComposer(Composer):
                     if constraints.max_leverage is not None
                     else requested_lev
                 )
-                final_leverage = max(1.0, min(requested_lev, allowed_lev_item))
+                if self._request.exchange_config.market_type == MarketType.SPOT:
+                    # Spot: long-only, no leverage
+                    final_leverage = 1.0
+                else:
+                    final_leverage = max(1.0, min(requested_lev, allowed_lev_item))
                 quantity = abs(delta)
 
                 # Normalize quantity through all guardrails

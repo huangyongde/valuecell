@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 from valuecell.utils.uuid import generate_uuid
@@ -16,53 +15,25 @@ from .trading_history.digest import RollingDigestBuilder
 from .trading_history.recorder import InMemoryHistoryRecorder
 
 
-def _make_prompt_provider(template_dir: Optional[Path] = None):
-    """Return a prompt_provider callable that builds prompts from templates.
+def _simple_prompt_provider(request: UserRequest) -> str:
+    """Return a resolved prompt text by fusing custom_prompt and prompt_text.
 
-    Behavior:
-    - If request.trading_config.template_id matches a file under templates dir
-      (try extensions .txt, .md, or exact name), the file content is used.
-    - If request.trading_config.custom_prompt is present, it is appended after
-      the template content (separated by two newlines).
-    - If neither is present, fall back to a simple generated prompt mentioning
-      the symbols.
+    Fusion logic:
+    - If custom_prompt exists, use it as base
+    - If prompt_text also exists, append it after custom_prompt
+    - If only prompt_text exists, use it
+    - Fallback: simple generated mention of symbols
     """
-    base = Path(__file__).parent / "templates" if template_dir is None else template_dir
-
-    def provider(request: UserRequest) -> str:
-        tid = request.trading_config.template_id
-        custom = request.trading_config.custom_prompt
-
-        template_text = ""
-        if tid:
-            # safe-resolve candidate files
-            candidates = [tid, f"{tid}.txt", f"{tid}.md"]
-            for name in candidates:
-                try_path = base / name
-                try:
-                    resolved = try_path.resolve()
-                    # ensure resolved path is inside base
-                    if base.resolve() in resolved.parents or resolved == base.resolve():
-                        if resolved.exists() and resolved.is_file():
-                            template_text = resolved.read_text(encoding="utf-8")
-                            break
-                except Exception:
-                    continue
-
-        parts = []
-        if template_text:
-            parts.append(template_text.strip())
-        if custom:
-            parts.append(custom.strip())
-
-        if parts:
-            return "\n\n".join(parts)
-
-        # fallback: simple generated prompt referencing symbols
-        symbols = ", ".join(request.trading_config.symbols)
-        return f"Compose trading instructions for symbols: {symbols}."
-
-    return provider
+    custom = request.trading_config.custom_prompt
+    prompt = request.trading_config.prompt_text
+    if custom and prompt:
+        return f"{prompt}\n\n{custom}"
+    elif custom:
+        return custom
+    elif prompt:
+        return prompt
+    symbols = ", ".join(request.trading_config.symbols)
+    return f"Compose trading instructions for symbols: {symbols}."
 
 
 @dataclass
@@ -105,6 +76,7 @@ def create_strategy_runtime(
     portfolio_service = InMemoryPortfolioService(
         initial_capital=initial_capital,
         trading_mode=request.exchange_config.trading_mode,
+        market_type=request.exchange_config.market_type,
         constraints=constraints,
         strategy_id=strategy_id,
     )
@@ -141,7 +113,7 @@ def create_strategy_runtime(
         execution_gateway=execution_gateway,
         history_recorder=history_recorder,
         digest_builder=digest_builder,
-        prompt_provider=_make_prompt_provider(),
+        prompt_provider=_simple_prompt_provider,
     )
 
     return StrategyRuntime(
@@ -156,6 +128,11 @@ async def create_strategy_runtime_async(request: UserRequest) -> StrategyRuntime
 
     This function properly initializes CCXT exchange connections for live trading.
     It can also be used for paper trading.
+
+    In LIVE mode, it fetches the exchange balance and sets the
+    initial capital to the available (free) cash for the strategy's
+    quote currencies. Opening positions will therefore draw down cash
+    and cannot borrow (no financing).
 
     Args:
         request: User request with strategy configuration
@@ -185,6 +162,59 @@ async def create_strategy_runtime_async(request: UserRequest) -> StrategyRuntime
     """
     # Create execution gateway asynchronously
     execution_gateway = await create_execution_gateway(request.exchange_config)
+
+    # In LIVE mode, fetch exchange balance and set initial capital from free cash
+    try:
+        if request.exchange_config.trading_mode == TradingMode.LIVE and hasattr(
+            execution_gateway, "fetch_balance"
+        ):
+            balance = await execution_gateway.fetch_balance()
+            free_map = {}
+            # ccxt balance may be shaped as: {'free': {...}, 'used': {...}, 'total': {...}}
+            try:
+                free_section = (
+                    balance.get("free") if isinstance(balance, dict) else None
+                )
+            except Exception:
+                free_section = None
+            if isinstance(free_section, dict):
+                free_map = {
+                    str(k).upper(): float(v or 0.0) for k, v in free_section.items()
+                }
+            else:
+                # fallback: per-ccy dicts: balance['USDT'] = {'free': x, 'used': y, 'total': z}
+                for k, v in balance.items() if isinstance(balance, dict) else []:
+                    if isinstance(v, dict) and "free" in v:
+                        try:
+                            free_map[str(k).upper()] = float(v.get("free") or 0.0)
+                        except Exception:
+                            continue
+            # collect quote currencies from configured symbols
+            quotes: list[str] = []
+            for sym in request.trading_config.symbols or []:
+                s = str(sym).upper()
+                if "/" in s:
+                    parts = s.split("/")
+                    if len(parts) == 2:
+                        quotes.append(parts[1])
+                elif "-" in s:
+                    parts = s.split("-")
+                    if len(parts) == 2:
+                        quotes.append(parts[1])
+            quotes = list(dict.fromkeys(quotes))  # unique order-preserving
+            free_cash = 0.0
+            if quotes:
+                for q in quotes:
+                    free_cash += float(free_map.get(q, 0.0) or 0.0)
+            else:
+                # fallback to common stablecoins
+                for q in ("USDT", "USD", "USDC"):
+                    free_cash += float(free_map.get(q, 0.0) or 0.0)
+            # Set initial capital to exchange free cash
+            request.trading_config.initial_capital = float(free_cash)
+    except Exception:
+        # Do not fail runtime creation if balance fetch or parsing fails
+        pass
 
     # Use the sync function with the pre-initialized gateway
     return create_strategy_runtime(request, execution_gateway=execution_gateway)
