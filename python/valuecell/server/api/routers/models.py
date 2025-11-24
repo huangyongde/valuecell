@@ -12,7 +12,7 @@ from valuecell.config.loader import get_config_loader
 from valuecell.config.manager import get_config_manager
 from valuecell.utils.env import get_system_env_path
 
-from ..schemas import LLMProviderConfigData, SuccessResponse
+from ..schemas import SuccessResponse
 from ..schemas.model import (
     AddModelRequest,
     ModelItem,
@@ -134,54 +134,6 @@ def create_models_router() -> APIRouter:
         }
         return mapping.get(provider)
 
-    # ---- Existing: LLM config list ----
-    @router.get(
-        "/llm/config",
-        response_model=SuccessResponse[List[LLMProviderConfigData]],
-        summary="Get available LLMModelConfigs",
-        description=(
-            "Return a list of LLM model configurations for the primary provider "
-            "and any enabled fallback providers. API keys may be omitted if not configured."
-        ),
-    )
-    async def get_llm_model_config() -> SuccessResponse[List[LLMProviderConfigData]]:
-        try:
-            manager = get_config_manager()
-
-            providers = [manager.primary_provider] + manager.fallback_providers
-            seen = set()
-            ordered = [p for p in providers if not (p in seen or seen.add(p))]
-
-            configs: List[LLMProviderConfigData] = []
-            for provider in ordered:
-                provider_cfg = manager.get_provider_config(provider)
-                if provider_cfg is None:
-                    configs.append(
-                        LLMProviderConfigData(
-                            provider=DEFAULT_MODEL_PROVIDER, api_key=None
-                        )
-                    )
-                else:
-                    configs.append(
-                        LLMProviderConfigData(
-                            provider=provider_cfg.name,
-                            api_key=provider_cfg.api_key,
-                        )
-                    )
-
-            if not configs:
-                configs.append(
-                    LLMProviderConfigData(provider=DEFAULT_MODEL_PROVIDER, api_key=None)
-                )
-
-            return SuccessResponse.create(
-                data=configs, msg=f"Retrieved {len(configs)} LLM provider configs"
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to get LLM config list: {str(e)}"
-            )
-
     @router.get(
         "/providers",
         response_model=SuccessResponse[List[ModelProviderSummary]],
@@ -273,19 +225,40 @@ def create_models_router() -> APIRouter:
             endpoint_env = connection.get("endpoint_env")
 
             # Update API key via env var
-            if payload.api_key and api_key_env:
+            # Accept empty string as a deliberate clear; skip only when field is omitted
+            if api_key_env and (payload.api_key is not None):
                 _set_env(api_key_env, payload.api_key)
 
-            # Update base_url via env when endpoint_env exists (Azure), otherwise YAML
-            if payload.base_url:
+            # Update base_url via env when endpoint_env exists (Azure),
+            # otherwise prefer updating the env placeholder if present; fallback to YAML
+            # Accept empty string as a deliberate clear; skip only when field is omitted
+            if payload.base_url is not None:
                 if endpoint_env:
                     _set_env(endpoint_env, payload.base_url)
                 else:
+                    # Try to detect ${ENV_VAR:default} syntax in provider YAML
                     path = _provider_yaml(provider)
                     data = _load_yaml(path)
-                    data.setdefault("connection", {})
-                    data["connection"]["base_url"] = payload.base_url
-                    _write_yaml(path, data)
+                    connection_raw = data.get("connection", {})
+                    raw_base = connection_raw.get("base_url")
+                    env_var_name = None
+                    if (
+                        isinstance(raw_base, str)
+                        and raw_base.startswith("${")
+                        and "}" in raw_base
+                    ):
+                        try:
+                            inner = raw_base[2 : raw_base.index("}")]
+                            env_var_name = inner.split(":", 1)[0]
+                        except Exception:
+                            env_var_name = None
+
+                    if env_var_name:
+                        _set_env(env_var_name, payload.base_url)
+                    else:
+                        data.setdefault("connection", {})
+                        data["connection"]["base_url"] = payload.base_url
+                        _write_yaml(path, data)
 
             _refresh_configs()
 

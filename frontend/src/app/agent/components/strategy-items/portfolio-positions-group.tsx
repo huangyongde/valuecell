@@ -1,5 +1,6 @@
 import { LineChart, Wallet } from "lucide-react";
 import { type FC, memo } from "react";
+import { ValueCellAgentPng } from "@/assets/png";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -12,8 +13,12 @@ import {
 import MultiLineChart from "@/components/valuecell/charts/model-multi-line";
 import { PngIcon } from "@/components/valuecell/png-icon";
 import ScrollContainer from "@/components/valuecell/scroll/scroll-container";
-import { SYMBOL_ICONS } from "@/constants/icons";
-import { formatChange, getChangeType, numberFixed } from "@/lib/utils";
+import {
+  formatChange,
+  getChangeType,
+  getCoinCapIcon,
+  numberFixed,
+} from "@/lib/utils";
 import { useStockColors } from "@/store/settings-store";
 import type { PortfolioSummary, Position } from "@/types/strategy";
 
@@ -36,7 +41,8 @@ const PositionRow: FC<PositionRowProps> = ({ position }) => {
       <TableCell>
         <div className="flex items-center gap-2">
           <PngIcon
-            src={SYMBOL_ICONS[position.symbol as keyof typeof SYMBOL_ICONS]}
+            src={getCoinCapIcon(position.symbol)}
+            callback={ValueCellAgentPng}
           />
           <p className="font-medium text-gray-950 text-sm">{position.symbol}</p>
         </div>
@@ -77,6 +83,9 @@ const PortfolioPositionsGroup: FC<PortfolioPositionsGroupProps> = ({
   priceCurve,
   positions,
 }) => {
+  const stockColors = useStockColors();
+  const changeType = getChangeType(summary?.total_pnl);
+
   const hasPositions = positions.length > 0;
   const hasPriceCurve = priceCurve.length > 0;
 
@@ -103,7 +112,10 @@ const PortfolioPositionsGroup: FC<PortfolioPositionsGroupProps> = ({
           </div>
           <div className="rounded-lg bg-gray-50 p-4">
             <p className="text-gray-500 text-sm">Total P&L</p>
-            <p className="mt-1 font-semibold text-gray-900 text-lg">
+            <p
+              className="mt-1 font-semibold text-gray-900 text-lg"
+              style={{ color: stockColors[changeType] }}
+            >
               {numberFixed(summary?.total_pnl, 4)}
             </p>
           </div>
@@ -113,7 +125,7 @@ const PortfolioPositionsGroup: FC<PortfolioPositionsGroupProps> = ({
           {hasPriceCurve ? (
             <MultiLineChart data={priceCurve} showLegend={false} />
           ) : (
-            <div className="flex h-full items-center justify-center rounded-xl border-2 border-gray-200 bg-gray-50/50">
+            <div className="flex h-full items-center justify-center rounded-xl bg-gray-50">
               <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
                 <div className="flex size-14 items-center justify-center rounded-full bg-gray-100">
                   <LineChart className="size-7 text-gray-400" />
@@ -172,7 +184,7 @@ const PortfolioPositionsGroup: FC<PortfolioPositionsGroupProps> = ({
             </Table>
           </ScrollContainer>
         ) : (
-          <div className="flex min-h-[240px] items-center justify-center rounded-xl border-2 border-gray-200 bg-gray-50/50">
+          <div className="flex min-h-[240px] items-center justify-center rounded-xl bg-gray-50">
             <div className="flex flex-col items-center gap-4 px-6 py-10 text-center">
               <div className="flex size-12 items-center justify-center rounded-full bg-gray-100">
                 <Wallet className="size-6 text-gray-400" />

@@ -43,12 +43,8 @@ Discord コミュニティへのご参加をお待ちしています。使用中
 
 # スクリーンショット
 
-<p align="center">
+p align="center">
   <img src="assets/product/homepage.png" style="width: 100%; height: auto;">
-</p>
-
-<p align="center">
-  <img src="assets/product/agent_market.png" style="width: 100%; height: auto;">
 </p>
 
 <p align="center">
@@ -57,6 +53,14 @@ Discord コミュニティへのご参加をお待ちしています。使用中
 
 <p align="center">
   <img src="assets/product/AutoTradingAgent.png" style="width: 100%; height: auto;">
+</p>
+
+<p align="center">
+  <img src="assets/product/Model_Configuration.png" style="width: 100%; height: auto;">
+</p>
+
+<p align="center">
+  <img src="assets/product/agent_market.png" style="width: 100%; height: auto;">
 </p>
 
 # 主な機能
@@ -73,7 +77,7 @@ Discord コミュニティへのご参加をお待ちしています。使用中
 - **その他**: さらに多くのエージェントを計画中...
 
 ## 柔軟な統合
-- **複数のLLMプロバイダー**: OpenRouter、SiliconFlow、GoogleおよびOpenAIをサポート
+- **複数のLLMプロバイダー**: OpenRouter、SiliconFlow、Azure、Openai-compatible、Google、OpenAIおよびDeepSeekをサポート
 - **人気の市場データ**: 米国市場、暗号市場、香港市場、中国市場など
 - **マルチエージェントフレームワーク対応**: A2AプロトコルによるLangchain、Agnoをサポート、研究開発の統合を行う
  **マ取引所接続**: OKX と Binance へのリアルタイムルーティングに対応し、安全ガードレールを内蔵
@@ -143,12 +147,34 @@ bash start.sh
 
 アプリケーションが起動したら、WebインターフェースでValueCellの機能を操作して探索できます。
 
-## リアルタイム取引 (OKX/Binance)
+## リアルタイム取引
 
-- 配AIモデルの設定: Webインターフェースから AI モデルの API キーを追加.
-- 取引所の設定: OKX / Binance の API 認証情報を設定
-- ストラテジー作成: AIモデルと取引所を組み合わせてカスタム戦略を作成
-- モニタリング＆コントロール: 戦略の開始／停止を行い、パフォーマンスをリアルタイムで監視
+- AIモデルの設定: Webインターフェースから AI モデルの API キーを追加します。
+- 取引所の設定: Binance/HyperLiquid/OKX/Coinbase... の API 認証情報を設定します。
+- ストラテジー作成: AIモデルと取引所を組み合わせてカスタム戦略を作成します。
+- モニタリング＆コントロール: 戦略の開始／停止を行い、パフォーマンスをリアルタイムで監視します。
+
+### サポートされている取引所
+
+| 取引所 | 備考 | ステータス |
+| --- | --- | --- |
+| **Binance** | 国際サイト [binance.com](binance.com) のみサポート（米国サイトは非対応）。USDT-M 先物（USDT証拠金契約）を使用します。先物口座に十分な USDT 残高があることを確認してください。取引ペア形式: `BTC/USDT` | ✅ テスト済み |
+| **Hyperliquid** | 証拠金通貨として USDC のみサポートします。メインウォレットアドレス + API ウォレット秘密鍵認証を使用します（[APIタブ](https://app.hyperliquid.xyz/API)から申請）。成行注文は自動的に IoC 指値注文に変換されます。取引ペア形式は手動で `SYMBOL/USDC` に調整する必要があります（例: `WIF/USDC`）。 | ✅ テスト済み |
+| **OKX** | 認証には API Key、Secret、Passphrase が必要です。USDT証拠金契約をサポートします。取引ペア形式: `BTC/USDT` | ✅ テスト済み |
+| Coinbase | USDT証拠金契約をサポートします。Coinbase International はまだサポートされていません。 | 🟡 部分的にテスト済み |
+| Gate.io | USDT証拠金契約をサポートします。API Key と Secret が必要です。 | 🟡 部分的にテスト済み |
+| MEXC | USDT証拠金契約をサポートします。API Key と Secret が必要です。 | 🟡 部分的にテスト済み |
+| Blockchain | USDT証拠金契約をサポートします。API Key と Secret が必要です。 | 🟡 部分的にテスト済み |
+
+**凡例**:
+- ✅ **テスト済み**: 本番環境で完全にテストおよび検証済み
+- 🟡 **部分的にテスト済み**: コードの実装は完了していますが、完全にはテストされておらず、デバッグが必要な場合があります
+- **推奨**: 完全にテストされた取引所（Binance, Hyperliquid, OKX）を優先的に使用してください
+
+### 注意事項
+- 現在はレバレッジ取引のみをサポートしているため、Perps（無期限先物）アカウントに十分な残高があることを確認する必要があります。
+- 資金の損失を防ぐため、API シークレットは安全に保管する必要があります。アプリはシークレットをデバイス上にローカルに保存し、インターネット経由で第三者に送信することはありません。
+- アカウントの安全を確保するために、API キーを定期的にリセットする必要があります。
 
 ---
 **注意**: アプリケーションを実行する前に、すべての前提条件がインストールされ、環境変数が適切に設定されていることを確認してください。
@@ -165,7 +191,7 @@ bash start.sh
 
 ## 🤖 強化されたエージェント機能
 ### 取引能力
-- **暗号通貨**: OKX と Binance の取引所に対応、今後さらに多くの取引所を順次追加予定です…
+- **暗号通貨**: OKX、BinanceとHyperliquid の取引所に対応、今後さらに多くの取引所を順次追加予定です…
 - **証券**: AI証券取引を段階的にサポート
 
 ### 市場拡大

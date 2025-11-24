@@ -3,6 +3,7 @@
 export interface Strategy {
   strategy_id: string;
   strategy_name: string;
+  strategy_type: "PromptBasedStrategy" | "GridStrategy";
   status: "running" | "stopped";
   trading_mode: "live" | "virtual";
   unrealized_pnl: number;
@@ -57,13 +58,6 @@ export interface StrategyPrompt {
   id: string;
   name: string;
   content: string;
-}
-
-// LLM Config API
-export interface LlmConfig {
-  provider: string;
-  model_id: string;
-  api_key: string;
 }
 
 // Create Strategy Request types

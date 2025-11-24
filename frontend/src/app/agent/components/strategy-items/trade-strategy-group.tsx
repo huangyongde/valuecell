@@ -50,7 +50,7 @@ const TradeStrategyCard: FC<TradeStrategyCardProps> = ({
     <div
       onClick={onClick}
       data-active={isSelected}
-      className="flex cursor-pointer flex-col gap-3 rounded-lg border border-gradient border-solid px-3 py-4"
+      className="flex cursor-pointer flex-col gap-2 rounded-lg border border-gradient border-solid px-3 py-4"
     >
       {/* Header: Name and Time */}
       <div className="flex items-center justify-between">
@@ -65,6 +65,17 @@ const TradeStrategyCard: FC<TradeStrategyCardProps> = ({
         </p>
       </div>
 
+      <div className="flex items-center gap-2">
+        {strategy.strategy_type && (
+          <p className="rounded-sm bg-gray-100 px-2 py-1 text-gray-700 text-xs">
+            {strategy.strategy_type}
+          </p>
+        )}
+        <p className="rounded-sm bg-gray-100 px-2 py-1 text-gray-700 text-xs">
+          {strategy.trading_mode === "live" ? "Live" : "Virtual"}
+        </p>
+      </div>
+
       {/* Model and Exchange Info */}
       <div className="flex items-center gap-2 font-medium text-gray-400 text-sm">
         <p>{strategy.model_id}</p>
@@ -73,22 +84,13 @@ const TradeStrategyCard: FC<TradeStrategyCardProps> = ({
 
       {/* PnL, Trading Mode, and Status */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <p
-            className="font-medium text-sm"
-            style={{ color: stockColors[changeType] }}
-          >
-            {formatChange(strategy.unrealized_pnl, "", 2)} (
-            {formatChange(strategy.unrealized_pnl_pct, "%", 2)})
-          </p>
-
-          {/* Trading Mode Badge */}
-          <div className="rounded px-0 py-0.5">
-            <p className="font-normal text-gray-700 text-xs">
-              {strategy.trading_mode === "live" ? "Live" : "Virtual"}
-            </p>
-          </div>
-        </div>
+        <p
+          className="font-medium text-sm"
+          style={{ color: stockColors[changeType] }}
+        >
+          {formatChange(strategy.unrealized_pnl, "", 2)} (
+          {formatChange(strategy.unrealized_pnl_pct, "%", 2)})
+        </p>
 
         {/* Status Badge */}
         <div className="flex items-center gap-2">
@@ -112,9 +114,9 @@ const TradeStrategyCard: FC<TradeStrategyCardProps> = ({
               <AlertDialogHeader>
                 <AlertDialogTitle>Stop Trading Strategy?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Are you sure you want to stop the strategy "
-                  {strategy.strategy_name}"? <br /> This action will halt all
-                  trading activities for this strategy.
+                  Stopping the strategy "{strategy.strategy_name}" will stop it
+                  immediately and trigger a forced liquidation. Do you want to
+                  proceed?
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -140,8 +142,9 @@ const TradeStrategyCard: FC<TradeStrategyCardProps> = ({
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete Strategy?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Are you sure you want to delete the strategy "
-                  {strategy.strategy_name}"?
+                  Deleting the strategy "{strategy.strategy_name}" will stop it
+                  immediately and trigger a forced liquidation. Do you want to
+                  proceed?
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
