@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from valuecell.agents.common.trading import models as agent_models
-from valuecell.agents.common.trading.utils import get_current_timestamp_ms
+from valuecell.server.db.repositories.strategy_repository import get_strategy_repository
 from valuecell.server.services import strategy_persistence
+from valuecell.utils.ts import get_current_timestamp_ms
 
 if TYPE_CHECKING:
     from valuecell.agents.common.trading._internal.coordinator import (
@@ -99,6 +100,8 @@ class StreamController:
         Logs and swallows errors to keep controller resilient.
         """
         try:
+            # Check if this is the first-ever snapshot before persisting
+            is_first_snapshot = not self.has_initial_state()
             initial_portfolio = runtime.coordinator.portfolio_service.get_view()
             try:
                 initial_portfolio.strategy_id = self.strategy_id
@@ -119,10 +122,99 @@ class StreamController:
                     "Persisted initial strategy summary for strategy={}",
                     self.strategy_id,
                 )
+
+            # When running in LIVE mode, update DB config.initial_capital to exchange available balance
+            # and record initial capital into strategy metadata for fast access by APIs.
+            # Only perform this on the first snapshot to avoid overwriting user edits or restarts.
+            try:
+                trading_mode = getattr(
+                    runtime.request.exchange_config, "trading_mode", None
+                )
+                is_live = trading_mode == agent_models.TradingMode.LIVE
+                if is_live and is_first_snapshot:
+                    initial_cash = getattr(initial_portfolio, "free_cash", None)
+                    if initial_cash is None:
+                        initial_cash = getattr(
+                            initial_portfolio, "account_balance", None
+                        )
+                    if initial_cash is None:
+                        initial_cash = getattr(
+                            runtime.request.trading_config, "initial_capital", None
+                        )
+
+                    if initial_cash is not None:
+                        if strategy_persistence.update_initial_capital(
+                            self.strategy_id, float(initial_cash)
+                        ):
+                            logger.info(
+                                "Updated DB initial_capital to {} for strategy={} (LIVE mode)",
+                                initial_cash,
+                                self.strategy_id,
+                            )
+                            try:
+                                # Also persist metadata for initial capital to avoid repeated first-snapshot queries
+                                strategy_persistence.set_initial_capital_metadata(
+                                    strategy_id=self.strategy_id,
+                                    initial_capital=float(initial_cash),
+                                    source="live_snapshot_cash",
+                                    ts_ms=timestamp_ms,
+                                )
+                                logger.info(
+                                    "Recorded initial_capital_live={} (source=live_snapshot_cash) in metadata for strategy={}",
+                                    initial_cash,
+                                    self.strategy_id,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to set initial_capital metadata for {}",
+                                    self.strategy_id,
+                                )
+                        else:
+                            logger.warning(
+                                "Failed to update DB initial_capital for strategy={} (LIVE mode)",
+                                self.strategy_id,
+                            )
+            except Exception:
+                logger.exception(
+                    "Error while updating DB initial_capital from live balance for {}",
+                    self.strategy_id,
+                )
         except Exception:
             logger.exception(
                 "Failed to persist initial portfolio/summary for {}", self.strategy_id
             )
+
+    def has_initial_state(self) -> bool:
+        """Return True if an initial portfolio snapshot already exists.
+
+        This allows idempotent strategy restarts without duplicating the first snapshot.
+        """
+        try:
+            repo = get_strategy_repository()
+            snap = repo.get_latest_portfolio_snapshot(self.strategy_id)
+            return snap is not None
+        except Exception:
+            logger.warning(
+                "has_initial_state check failed for strategy {}", self.strategy_id
+            )
+            return False
+
+    def get_latest_portfolio_snapshot(self):
+        """Return the latest stored portfolio snapshot or None.
+
+        This is a convenience wrapper around the repository call so callers
+        can inspect persisted initial state (for resume semantics).
+        """
+        try:
+            repo = get_strategy_repository()
+            snap = repo.get_latest_portfolio_snapshot(self.strategy_id)
+            return snap
+        except Exception:
+            logger.warning(
+                "Failed to fetch latest portfolio snapshot for strategy {}",
+                self.strategy_id,
+            )
+            return None
 
     def persist_cycle_results(self, result: DecisionCycleResult) -> None:
         """Persist trades, portfolio view, and strategy summary for a cycle.
@@ -184,8 +276,34 @@ class StreamController:
         except Exception:
             logger.exception("Error persisting cycle results for {}", self.strategy_id)
 
+    def persist_portfolio_snapshot(self, runtime: StrategyRuntime) -> None:
+        """Persist a final portfolio snapshot (used at shutdown).
+
+        Mirrors portfolio part of cycle persistence but without trades or summary refresh.
+        Errors are logged and swallowed.
+        """
+        try:
+            view = runtime.coordinator.portfolio_service.get_view()
+            try:
+                view.strategy_id = self.strategy_id
+            except Exception:
+                pass
+            ok = strategy_persistence.persist_portfolio_view(view)
+            if ok:
+                logger.info(
+                    "Persisted final portfolio snapshot for strategy={}",
+                    self.strategy_id,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to persist final portfolio snapshot for {}", self.strategy_id
+            )
+
     async def finalize(
-        self, runtime: StrategyRuntime, reason: str = "normal_exit"
+        self,
+        runtime: StrategyRuntime,
+        reason: agent_models.StopReason | str = agent_models.StopReason.NORMAL_EXIT,
+        reason_detail: str | None = None,
     ) -> None:
         """Finalize strategy: close resources and mark as stopped.
 
@@ -207,28 +325,28 @@ class StreamController:
                 "Failed to close runtime resources for strategy {}", self.strategy_id
             )
 
-        if reason == "error_closing_positions":
-            # Special case: we failed to close positions, so mark as ERROR to alert user
-            final_status = agent_models.StrategyStatus.ERROR.value
-        else:
-            final_status = agent_models.StrategyStatus.STOPPED.value
+        # With simplified statuses, all terminal states map to STOPPED.
+        # Preserve the detailed stop reason in strategy metadata for resume logic.
+        final_status = agent_models.StrategyStatus.STOPPED.value
 
         # Mark strategy as stopped/error in persistence
         try:
             strategy_persistence.set_strategy_status(self.strategy_id, final_status)
+            reason_value = getattr(reason, "value", reason)
             logger.info(
                 "Marked strategy {} as {} (reason: {})",
                 self.strategy_id,
                 final_status,
-                reason,
+                reason_value,
             )
         except Exception:
             logger.exception(
                 "Failed to mark strategy {} for {} (reason: {})",
                 final_status,
                 self.strategy_id,
-                reason,
+                getattr(reason, "value", reason),
             )
+        self._record_stop_reason(reason, reason_detail)
 
     def is_running(self) -> bool:
         """Check if strategy is still running according to persistence layer."""
@@ -258,4 +376,29 @@ class StreamController:
         except Exception:
             logger.exception(
                 "Error persisting ad-hoc trades for strategy {}", self.strategy_id
+            )
+
+    def _record_stop_reason(
+        self, reason: agent_models.StopReason | str, reason_detail: str | None = None
+    ) -> None:
+        """Persist last stop reason inside strategy metadata for resume decisions.
+
+        Accept either a StopReason enum or a raw string; store the normalized
+        string value in the DB metadata.
+        """
+        try:
+            repo = get_strategy_repository()
+            strategy = repo.get_strategy_by_strategy_id(self.strategy_id)
+            if strategy is None:
+                return
+            metadata = dict(strategy.strategy_metadata or {})
+            metadata["stop_reason"] = getattr(reason, "value", reason)
+            if reason_detail is not None:
+                metadata["stop_reason_detail"] = reason_detail
+            else:
+                metadata.pop("stop_reason_detail", None)
+            repo.upsert_strategy(strategy_id=self.strategy_id, metadata=metadata)
+        except Exception:
+            logger.warning(
+                "Failed to record stop reason for strategy %s", self.strategy_id
             )

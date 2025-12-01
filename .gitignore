@@ -228,3 +228,8 @@ lancedb
 logs
 .knowledge
 .txt
+
+# Local configs
+python/configs/
+
+*.key

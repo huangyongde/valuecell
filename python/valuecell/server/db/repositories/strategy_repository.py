@@ -8,7 +8,7 @@ and strategy details.
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import desc, func
+from sqlalchemy import asc, desc, func
 from sqlalchemy.orm import Session
 
 from ..connection import get_database_manager
@@ -44,6 +44,31 @@ class StrategyRepository:
             if strategy:
                 session.expunge(strategy)
             return strategy
+        finally:
+            if not self.db_session:
+                session.close()
+
+    def list_strategies_by_status(
+        self, statuses: list[str], limit: Optional[int] = None
+    ) -> list[Strategy]:
+        """Return strategies whose status is in the provided list.
+
+        Used by auto-resume logic to identify strategies that should be resumed
+        after a process restart. Best-effort: errors return empty list.
+        """
+        if not statuses:
+            return []
+        session = self._get_session()
+        try:
+            q = session.query(Strategy).filter(Strategy.status.in_(statuses))
+            if limit:
+                q = q.limit(limit)
+            items = q.all()
+            for item in items:
+                session.expunge(item)
+            return items
+        except Exception:
+            return []
         finally:
             if not self.db_session:
                 session.close()
@@ -222,6 +247,26 @@ class StrategyRepository:
             for item in items:
                 session.expunge(item)
             return items
+        finally:
+            if not self.db_session:
+                session.close()
+
+    def get_first_portfolio_snapshot(
+        self, strategy_id: str
+    ) -> Optional[StrategyPortfolioView]:
+        """Convenience: return the earliest portfolio snapshot or None."""
+        session = self._get_session()
+        try:
+            item = (
+                session.query(StrategyPortfolioView)
+                .filter(StrategyPortfolioView.strategy_id == strategy_id)
+                .order_by(asc(StrategyPortfolioView.snapshot_ts))
+                .limit(1)
+                .first()
+            )
+            if item:
+                session.expunge(item)
+            return item
         finally:
             if not self.db_session:
                 session.close()

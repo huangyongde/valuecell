@@ -8,13 +8,12 @@ This factory:
 4. Supports fallback providers for reliability
 """
 
-import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
-from valuecell.config.manager import ConfigManager, ProviderConfig, get_config_manager
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+from valuecell.config.manager import ConfigManager, ProviderConfig, get_config_manager
 
 
 class ModelProvider(ABC):
@@ -471,6 +470,100 @@ class OpenAICompatibleProvider(ModelProvider):
         return bool(self.config.api_key and self.config.base_url)
 
 
+class DeepSeekProvider(ModelProvider):
+    """DeepSeek model provider
+
+    DeepSeek provides OpenAI-compatible API endpoints for their models.
+    This provider uses the OpenAI-compatible interface to interact with DeepSeek's API.
+    """
+
+    def create_model(self, model_id: Optional[str] = None, **kwargs):
+        """Create DeepSeek model via agno (OpenAI-compatible)"""
+        try:
+            from agno.models.openai import OpenAILike
+        except ImportError:
+            raise ImportError(
+                "agno package not installed. Install with: pip install agno"
+            )
+
+        model_id = model_id or self.config.default_model
+        params = {**self.config.parameters, **kwargs}
+
+        logger.info(f"Creating DeepSeek model: {model_id}")
+
+        return OpenAILike(
+            id=model_id,
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
+            temperature=params.get("temperature"),
+            max_tokens=params.get("max_tokens"),
+            top_p=params.get("top_p"),
+            frequency_penalty=params.get("frequency_penalty"),
+            presence_penalty=params.get("presence_penalty"),
+        )
+
+
+class DashScopeProvider(ModelProvider):
+    """DashScope model provider (native)"""
+
+    def create_model(self, model_id: Optional[str] = None, **kwargs):
+        """Create DashScope model via agno"""
+        try:
+            from agno.models.dashscope import DashScope
+        except ImportError:
+            raise ImportError(
+                "agno package not installed. Install with: pip install agno"
+            )
+
+        model_id = model_id or self.config.default_model
+        params = {**self.config.parameters, **kwargs}
+
+        # Use configured base_url if present, otherwise let DashScope use its default
+        # agno's DashScope class has a default base_url for the compatible-mode endpoint
+        base_url = self.config.base_url
+
+        logger.info(f"Creating DashScope model: {model_id}")
+
+        return DashScope(
+            id=model_id,
+            api_key=self.config.api_key,
+            base_url=base_url,
+            temperature=params.get("temperature"),
+            max_tokens=params.get("max_tokens"),
+            top_p=params.get("top_p"),
+        )
+
+    def create_embedder(self, model_id: Optional[str] = None, **kwargs):
+        """Create embedder via DashScope (OpenAI-compatible)"""
+        try:
+            from agno.knowledge.embedder.openai import OpenAIEmbedder
+        except ImportError:
+            raise ImportError("agno package not installed")
+
+        # Use provided model_id or default embedding model
+        model_id = model_id or self.config.default_embedding_model
+
+        if not model_id:
+            raise ValueError(
+                f"No embedding model specified for provider '{self.config.name}'"
+            )
+
+        # Merge parameters: provider embedding defaults < kwargs
+        params = {**self.config.embedding_parameters, **kwargs}
+
+        logger.info(f"Creating DashScope embedder: {model_id}")
+
+        return OpenAIEmbedder(
+            id=model_id,
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
+            dimensions=int(params.get("dimensions", 2048))
+            if params.get("dimensions")
+            else None,
+            encoding_format=params.get("encoding_format", "float"),
+        )
+
+
 class ModelFactory:
     """
     Factory for creating model instances with provider abstraction
@@ -490,6 +583,8 @@ class ModelFactory:
         "siliconflow": SiliconFlowProvider,
         "openai": OpenAIProvider,
         "openai-compatible": OpenAICompatibleProvider,
+        "deepseek": DeepSeekProvider,
+        "dashscope": DashScopeProvider,
     }
 
     def __init__(self, config_manager: Optional[ConfigManager] = None):

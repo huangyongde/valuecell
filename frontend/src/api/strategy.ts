@@ -7,6 +7,7 @@ import type {
   Position,
   Strategy,
   StrategyCompose,
+  StrategyPerformance,
   StrategyPrompt,
 } from "@/types/strategy";
 
@@ -20,7 +21,7 @@ export const useGetStrategyList = () => {
         }>
       >("/strategies"),
     select: (data) => data.data.strategies,
-    refetchInterval: 15 * 1000,
+    refetchInterval: 5 * 1000,
   });
 };
 
@@ -32,7 +33,7 @@ export const useGetStrategyDetails = (strategyId?: string) => {
         `/strategies/detail?id=${strategyId}`,
       ),
     select: (data) => data.data,
-    refetchInterval: 15 * 1000,
+    refetchInterval: 5 * 1000,
     enabled: !!strategyId,
   });
 };
@@ -45,7 +46,7 @@ export const useGetStrategyHoldings = (strategyId?: string) => {
         `/strategies/holding?id=${strategyId}`,
       ),
     select: (data) => data.data,
-    refetchInterval: 15 * 1000,
+    refetchInterval: 5 * 1000,
     enabled: !!strategyId,
   });
 };
@@ -58,7 +59,7 @@ export const useGetStrategyPriceCurve = (strategyId?: string) => {
         `/strategies/holding_price_curve?id=${strategyId}`,
       ),
     select: (data) => data.data,
-    refetchInterval: 15 * 1000,
+    refetchInterval: 5 * 1000,
     enabled: !!strategyId,
   });
 };
@@ -73,7 +74,7 @@ export const useGetStrategyPortfolioSummary = (strategyId?: string) => {
         `/strategies/portfolio_summary?id=${strategyId}`,
       ),
     select: (data) => data.data,
-    refetchInterval: 15 * 1000,
+    refetchInterval: 5 * 1000,
     enabled: !!strategyId,
   });
 };
@@ -93,6 +94,13 @@ export const useCreateStrategy = () => {
         queryKey: API_QUERY_KEYS.STRATEGY.strategyList,
       });
     },
+  });
+};
+
+export const useTestConnection = () => {
+  return useMutation({
+    mutationFn: (data: CreateStrategyRequest["exchange_config"]) =>
+      apiClient.post<ApiResponse<null>>("/strategies/test-connection", data),
   });
 };
 
@@ -152,5 +160,17 @@ export const useCreateStrategyPrompt = () => {
         queryKey: API_QUERY_KEYS.STRATEGY.strategyPrompts,
       });
     },
+  });
+};
+
+export const useStrategyPerformance = (strategyId?: string) => {
+  return useQuery({
+    queryKey: API_QUERY_KEYS.STRATEGY.strategyPerformance([strategyId ?? ""]),
+    queryFn: () =>
+      apiClient.get<ApiResponse<StrategyPerformance>>(
+        `/strategies/performance?id=${strategyId}`,
+      ),
+    select: (data) => data.data,
+    enabled: false,
   });
 };

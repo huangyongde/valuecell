@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from valuecell.agents.common.trading.models import (
+    ExchangeConfig,
     StrategyStatus,
     StrategyStatusContent,
     StrategyType,
@@ -23,6 +24,7 @@ from valuecell.server.api.schemas.base import SuccessResponse
 # Note: Strategy type is now part of TradingConfig in the request body.
 from valuecell.server.db.connection import get_db
 from valuecell.server.db.repositories import get_strategy_repository
+from valuecell.server.services.strategy_autoresume import auto_resume_strategies
 from valuecell.utils.uuid import generate_conversation_id, generate_uuid
 
 
@@ -31,6 +33,14 @@ def create_strategy_agent_router() -> APIRouter:
 
     router = APIRouter(prefix="/strategies", tags=["strategies"])
     orchestrator = AgentOrchestrator()
+
+    @router.on_event("startup")
+    async def _startup_auto_resume() -> None:
+        """Schedule strategy auto-resume on FastAPI startup."""
+        try:
+            await auto_resume_strategies(orchestrator)
+        except Exception:
+            logger.warning("Failed to schedule strategy auto-resume startup task")
 
     @router.post("/create")
     async def create_strategy_agent(
@@ -158,25 +168,22 @@ def create_strategy_agent_router() -> APIRouter:
                                 "model_provider": request.llm_model_config.provider,
                                 "model_id": request.llm_model_config.model_id,
                                 "exchange_id": request.exchange_config.exchange_id,
-                                "trading_mode": (
-                                    request.exchange_config.trading_mode.value
-                                    if hasattr(
-                                        request.exchange_config.trading_mode, "value"
-                                    )
-                                    else str(request.exchange_config.trading_mode)
-                                ),
+                                "trading_mode": request.exchange_config.trading_mode.value,
                             }
-                            status_value = (
-                                status_content.status.value
-                                if hasattr(status_content.status, "value")
-                                else str(status_content.status)
-                            )
+                            status = status_content.status
+                            if status == StrategyStatus.STOPPED:
+                                metadata["stop_reason"] = (
+                                    status_content.stop_reason.value
+                                )
+                                metadata["stop_reason_detail"] = (
+                                    status_content.stop_reason_detail
+                                )
                             repo.upsert_strategy(
                                 strategy_id=status_content.strategy_id,
                                 name=name,
                                 description=None,
                                 user_id=user_input_meta.user_id,
-                                status=status_value,
+                                status=status.value,
                                 config=request.model_dump(),
                                 metadata=metadata,
                             )
@@ -205,6 +212,8 @@ def create_strategy_agent_router() -> APIRouter:
                             else str(request.exchange_config.trading_mode)
                         ),
                         "fallback": True,
+                        "stop_reason": "error",
+                        "stop_reason_detail": "No status event from orchestrator",
                     }
                     repo.upsert_strategy(
                         strategy_id=fallback_strategy_id,
@@ -221,7 +230,7 @@ def create_strategy_agent_router() -> APIRouter:
                 return StrategyStatusContent(
                     strategy_id=fallback_strategy_id, status="stopped"
                 )
-            except Exception:
+            except Exception as exc:
                 # Orchestrator failed; fallback to direct DB creation
                 fallback_strategy_id = generate_uuid("strategy")
                 try:
@@ -241,6 +250,8 @@ def create_strategy_agent_router() -> APIRouter:
                             else str(request.exchange_config.trading_mode)
                         ),
                         "fallback": True,
+                        "stop_reason": "error",
+                        "stop_reason_detail": str(exc),
                     }
                     repo.upsert_strategy(
                         strategy_id=fallback_strategy_id,
@@ -280,7 +291,8 @@ def create_strategy_agent_router() -> APIRouter:
                         else str(request.exchange_config.trading_mode)
                     ),
                     "fallback": True,
-                    "error": str(e),
+                    "stop_reason": "error",
+                    "stop_reason_detail": str(e),
                 }
                 repo.upsert_strategy(
                     strategy_id=fallback_strategy_id,
@@ -302,6 +314,53 @@ def create_strategy_agent_router() -> APIRouter:
 
             return StrategyStatusContent(
                 strategy_id=fallback_strategy_id, status=StrategyStatus.ERROR
+            )
+
+    @router.post("/test-connection")
+    async def test_exchange_connection(request: ExchangeConfig):
+        """Test connection to the exchange with provided credentials."""
+        try:
+            # If virtual trading, just return success immediately
+            if getattr(request, "trading_mode", None) == "virtual":
+                return SuccessResponse.create(msg="Success!")
+
+            from valuecell.agents.common.trading.execution.ccxt_trading import (
+                create_ccxt_gateway,
+            )
+
+            # Map ExchangeConfig fields to gateway args
+            # Note: ExchangeConfig might differ slightly from create_ccxt_gateway args
+            gateway = await create_ccxt_gateway(
+                exchange_id=request.exchange_id,
+                api_key=request.api_key or "",
+                secret_key=request.secret_key or "",
+                passphrase=request.passphrase,
+                wallet_address=request.wallet_address,
+                private_key=request.private_key,
+                # Ensure we pass a safe default for required args if missing in config
+                market_type="swap",  # Default to swap/perpetual for testing
+            )
+
+            try:
+                is_connected = await gateway.test_connection()
+                if is_connected:
+                    return SuccessResponse.create(msg="Success!")
+                else:
+                    # Return 200 with error message or 400? User asked for "Failed..." return
+                    # We'll throw 400 for UI to catch, or return success=False in body
+                    # But SuccessResponse implies 200.
+                    # If I raise HTTPException it shows as error.
+                    raise HTTPException(
+                        status_code=400, detail="Failed, please check your API key"
+                    )
+            finally:
+                await gateway.close()
+
+        except Exception as e:
+            # If create_ccxt_gateway fails or other error
+            logger.warning(f"Connection test failed: {e}")
+            raise HTTPException(
+                status_code=400, detail=f"Failed, please check your API key: {str(e)}"
             )
 
     @router.delete("/delete")

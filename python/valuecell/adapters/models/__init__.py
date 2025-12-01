@@ -21,9 +21,13 @@ Usage:
 
 from valuecell.adapters.models.factory import (
     AzureProvider,
+    DashScopeProvider,
+    DeepSeekProvider,
     GoogleProvider,
     ModelFactory,
     ModelProvider,
+    OpenAICompatibleProvider,
+    OpenAIProvider,
     OpenRouterProvider,
     SiliconFlowProvider,
     create_model,
@@ -37,10 +41,14 @@ __all__ = [
     "ModelProvider",
     "get_model_factory",
     # Provider implementations
+    "OpenAIProvider",
+    "OpenAICompatibleProvider",
     "OpenRouterProvider",
     "GoogleProvider",
     "AzureProvider",
     "SiliconFlowProvider",
+    "DeepSeekProvider",
+    "DashScopeProvider",
     # Convenience functions
     "create_model",
     "create_model_for_agent",

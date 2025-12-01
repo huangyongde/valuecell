@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Dict
 
 from agno.agent import Agent as AgnoAgent
@@ -53,6 +52,20 @@ class LlmComposer(BaseComposer):
         self._request = request
         self._default_slippage_bps = default_slippage_bps
         self._quantity_precision = quantity_precision
+        cfg = self._request.llm_model_config
+        self._model = model_utils.create_model_with_provider(
+            provider=cfg.provider,
+            model_id=cfg.model_id,
+            api_key=cfg.api_key,
+        )
+        self.agent = AgnoAgent(
+            model=self._model,
+            output_schema=TradePlanProposal,
+            markdown=False,
+            instructions=[SYSTEM_PROMPT],
+            use_json_mode=model_utils.model_should_use_json_mode(self._model),
+            debug_mode=env_utils.agent_debug_mode_enabled(),
+        )
 
     def _build_prompt_text(self) -> str:
         """Return a resolved prompt text by fusing custom_prompt and prompt_text.
@@ -87,7 +100,9 @@ class LlmComposer(BaseComposer):
                 return ComposeResult(instructions=[], rationale=plan.rationale)
         except Exception as exc:  # noqa: BLE001
             logger.error("LLM invocation failed: {}", exc)
-            return ComposeResult(instructions=[], rationale="LLM invocation failed")
+            return ComposeResult(
+                instructions=[], rationale=f"LLM invocation failed: {exc}"
+            )
 
         # Optionally forward non-NOOP plan rationale to Discord webhook (env-driven)
         try:
@@ -169,6 +184,8 @@ class LlmComposer(BaseComposer):
             "features.1m = structural trends (240 periods), features.1s = realtime signals (180 periods). "
             "market.funding_rate: positive = longs pay shorts. "
             "Respect constraints and risk_flags. Prefer NOOP when edge unclear. "
+            "Always include a concise top-level 'rationale'. "
+            "If you choose NOOP (items is empty), set 'rationale' to explain why: reference current prices and 'price.change_pct' vs thresholds, and any constraints or risk flags that led to NOOP. "
             "Output JSON with items array."
         )
 
@@ -183,24 +200,7 @@ class LlmComposer(BaseComposer):
         agent's `response.content` is returned (or validated) as a
         `LlmPlanProposal`.
         """
-
-        cfg = self._request.llm_model_config
-        model = model_utils.create_model_with_provider(
-            provider=cfg.provider,
-            model_id=cfg.model_id,
-            api_key=cfg.api_key,
-        )
-
-        # Wrap model in an Agent (consistent with parser_agent usage)
-        agent = AgnoAgent(
-            model=model,
-            output_schema=TradePlanProposal,
-            markdown=False,
-            instructions=[SYSTEM_PROMPT],
-            use_json_mode=model_utils.model_should_use_json_mode(model),
-            debug_mode=env_utils.agent_debug_mode_enabled(),
-        )
-        response = await agent.arun(prompt)
+        response = await self.agent.arun(prompt)
         # Agent may return a raw object or a wrapper with `.content`.
         content = getattr(response, "content", None) or response
         logger.debug("Received LLM response {}", content)
@@ -210,9 +210,13 @@ class LlmComposer(BaseComposer):
 
         logger.error("LLM output failed validation: {}", content)
         return TradePlanProposal(
-            ts=int(datetime.now(timezone.utc).timestamp() * 1000),
             items=[],
-            rationale="LLM output failed validation",
+            rationale=(
+                "LLM output failed validation. The model you chose "
+                f"`{model_utils.describe_model(self._model)}` "
+                "may be incompatible or returned unexpected output. "
+                f"Raw output: {content}"
+            ),
         )
 
     async def _send_plan_to_discord(self, plan: TradePlanProposal) -> None:
