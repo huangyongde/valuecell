@@ -5,8 +5,8 @@ import { memo, useImperativeHandle, useState } from "react";
 import { useGetModelProviderDetail } from "@/api/setting";
 import {
   useCreateStrategy,
+  useCreateStrategyPrompt,
   useGetStrategyList,
-  useGetStrategyPrompts,
 } from "@/api/strategy";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -24,25 +24,25 @@ import {
   EXCHANGE_OPTIONS,
   ExchangeForm,
 } from "@/components/valuecell/form/exchange-form";
-import { TradingStrategyForm } from "@/components/valuecell/form/trading-strategy-form";
 import ScrollContainer from "@/components/valuecell/scroll/scroll-container";
 import { StepIndicator } from "@/components/valuecell/step-indicator";
 import { TRADING_SYMBOLS } from "@/constants/agent";
 import {
   aiModelSchema,
+  copyTradingStrategySchema,
   exchangeSchema,
-  tradingStrategySchema,
 } from "@/constants/schema";
 import { useAppForm } from "@/hooks/use-form";
 import { tracker } from "@/lib/tracker";
-import type { CreateStrategy, Strategy } from "@/types/strategy";
+import type { CopyStrategy, Strategy } from "@/types/strategy";
+import { CopyStrategyForm } from "../form/copy-strategy-form";
 
-export interface CreateStrategyModelRef {
-  open: (data?: CreateStrategy) => void;
+export interface CopyStrategyModelRef {
+  open: (data?: CopyStrategy) => void;
 }
-interface CreateStrategyModalProps {
+interface CopyStrategyModalProps {
   children?: React.ReactNode;
-  ref?: RefObject<CreateStrategyModelRef | null>;
+  ref?: RefObject<CopyStrategyModelRef | null>;
 }
 
 const STEPS = [
@@ -51,22 +51,20 @@ const STEPS = [
   { step: 3, title: "Trading strategy" },
 ];
 
-const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
-  ref,
-  children,
-}) => {
+const CopyStrategyModal: FC<CopyStrategyModalProps> = ({ ref, children }) => {
   const [open, setOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
+  const [defaultValues, setDefaultValues] = useState<CopyStrategy>();
   const [error, setError] = useState<string | null>(null);
 
-  const { data: prompts = [] } = useGetStrategyPrompts();
   const { data: strategies = [] } = useGetStrategyList();
   const { mutateAsync: createStrategy, isPending: isCreatingStrategy } =
     useCreateStrategy();
+  const { mutateAsync: createStrategyPrompt } = useCreateStrategyPrompt();
 
   // Step 1 Form: AI Models
   const form1 = useAppForm({
-    defaultValues: {
+    defaultValues: defaultValues?.llm_model_config || {
       provider: "",
       model_id: "",
       api_key: "",
@@ -84,7 +82,7 @@ const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
 
   // Step 2 Form: Exchanges
   const form2 = useAppForm({
-    defaultValues: {
+    defaultValues: defaultValues?.exchange_config || {
       trading_mode: "live" as "live" | "virtual",
       exchange_id: "okx",
       api_key: "",
@@ -125,23 +123,32 @@ const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
 
   // Step 3 Form: Trading Strategy
   const form3 = useAppForm({
-    defaultValues: {
+    defaultValues: defaultValues?.trading_config || {
       strategy_type: "PromptBasedStrategy" as Strategy["strategy_type"],
       strategy_name: "",
       initial_capital: 1000,
       max_leverage: 2,
       decide_interval: 60,
       symbols: TRADING_SYMBOLS,
-      template_id: prompts.length > 0 ? prompts[0].id : "",
+      prompt_name: "",
+      prompt: "",
     },
     validators: {
-      onSubmit: tradingStrategySchema,
+      onSubmit: copyTradingStrategySchema,
     },
     onSubmit: async ({ value }) => {
+      const { prompt_name, prompt, ...rest } = value;
+      const {
+        data: { id: template_id },
+      } = await createStrategyPrompt({
+        name: `${prompt_name} Copy`,
+        content: prompt,
+      });
+
       const payload = {
         llm_model_config: form1.state.values,
         exchange_config: form2.state.values,
-        trading_config: value,
+        trading_config: { ...rest, template_id },
       };
 
       const { code, msg } = await createStrategy(payload);
@@ -172,12 +179,8 @@ const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
 
   useImperativeHandle(ref, () => ({
     open: (data) => {
-      if (data) {
-        form1.reset(data.llm_model_config);
-        form2.reset(data.exchange_config);
-        form3.reset(data.trading_config);
-      }
       setOpen(true);
+      setDefaultValues(data);
     },
   }));
 
@@ -192,7 +195,9 @@ const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
       >
         <DialogTitle className="flex flex-col gap-4 px-1">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-lg">Add trading strategy</h2>
+            <h2 className="font-semibold text-lg">
+              Duplicate trading strategy
+            </h2>
             <CloseButton onClick={resetAll} />
           </div>
 
@@ -209,9 +214,8 @@ const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
 
           {/* Step 3: Trading Strategy */}
           {currentStep === 3 && (
-            <TradingStrategyForm
+            <CopyStrategyForm
               form={form3}
-              prompts={prompts}
               tradingMode={form2.state.values.trading_mode}
             />
           )}
@@ -221,11 +225,10 @@ const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
           {error && (
             <Alert variant="destructive">
               <AlertCircleIcon />
-              <AlertTitle>Error Creating Strategy</AlertTitle>
+              <AlertTitle>Error Duplicating Strategy</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
-
           <div className="grid w-full grid-cols-2 gap-4">
             <Button
               type="button"
@@ -262,4 +265,4 @@ const CreateStrategyModal: FC<CreateStrategyModalProps> = ({
   );
 };
 
-export default memo(CreateStrategyModal);
+export default memo(CopyStrategyModal);
