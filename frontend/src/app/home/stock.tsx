@@ -1,5 +1,6 @@
 import BackButton from "@valuecell/button/back-button";
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router";
 import { useGetStockDetail, useRemoveStockFromWatchlist } from "@/api/stock";
 import TradingViewAdvancedChart from "@/components/tradingview/tradingview-advanced-chart";
@@ -7,9 +8,9 @@ import { Button } from "@/components/ui/button";
 import LinkButton from "@/components/valuecell/button/link-button";
 import { useIsLoggedIn } from "@/store/system-store";
 import type { Route } from "./+types/stock";
-import { StockHistoryChart } from "./components/stock-history-chart";
 
 function Stock() {
+  const { t, i18n } = useTranslation();
   const { stockId } = useParams<Route.LoaderArgs["params"]>();
   const navigate = useNavigate();
   // Use stockId as ticker to fetch real data from API
@@ -42,7 +43,7 @@ function Stock() {
   if (isDetailLoading) {
     return (
       <div className="flex h-96 items-center justify-center">
-        <div className="text-gray-500 text-lg">Loading stock data...</div>
+        <div className="text-gray-500 text-lg">{t("home.stock.loading")}</div>
       </div>
     );
   }
@@ -52,7 +53,7 @@ function Stock() {
     return (
       <div className="flex h-96 items-center justify-center">
         <div className="text-lg text-red-500">
-          Error loading stock data: {detailError?.message}
+          {t("home.stock.error", { message: detailError?.message })}
         </div>
       </div>
     );
@@ -72,27 +73,29 @@ function Stock() {
             onClick={handleRemoveStock}
             disabled={isRemovingStock}
           >
-            {isRemovingStock ? "Removing..." : "Remove"}
+            {isRemovingStock
+              ? t("home.stock.removing")
+              : t("home.stock.remove")}
           </Button>
         </div>
       </div>
       <div className="w-full">
-        {isLoggedIn ? (
+        {/* {isLoggedIn ? (
           <StockHistoryChart ticker={ticker} />
-        ) : (
-          <TradingViewAdvancedChart
-            ticker={ticker}
-            interval="D"
-            minHeight={420}
-            theme="light"
-            locale="en"
-            timezone="UTC"
-          />
-        )}
+        ) : ( */}
+        <TradingViewAdvancedChart
+          ticker={ticker}
+          interval="D"
+          minHeight={420}
+          theme="light"
+          locale={i18n.language}
+          timezone="UTC"
+        />
+        {/* )} */}
       </div>
 
       <div className="flex flex-col gap-2">
-        <h2 className="font-bold text-lg">About</h2>
+        <h2 className="font-bold text-lg">{t("home.stock.about")}</h2>
 
         {stockDetailData?.properties.business_summary && (
           <p className="line-clamp-4 text-neutral-500 text-sm leading-6">
@@ -103,20 +106,26 @@ function Stock() {
         {stockDetailData?.properties && (
           <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
             <div>
-              <span className="text-muted-foreground">Sector:</span>
+              <span className="text-muted-foreground">
+                {t("home.stock.sector")}
+              </span>
               <span className="ml-2 font-medium">
                 {stockDetailData.properties.sector}
               </span>
             </div>
             <div>
-              <span className="text-muted-foreground">Industry:</span>
+              <span className="text-muted-foreground">
+                {t("home.stock.industry")}
+              </span>
               <span className="ml-2 font-medium">
                 {stockDetailData.properties.industry}
               </span>
             </div>
             {stockDetailData.properties.website && (
               <div className="col-span-2">
-                <span className="text-muted-foreground">Website:</span>
+                <span className="text-muted-foreground">
+                  {t("home.stock.website")}
+                </span>
                 <LinkButton
                   url={stockDetailData.properties.website}
                   className="ml-2 text-blue-600"
