@@ -12,10 +12,19 @@
       "title": "Language and Region",
       "description": "Select your preferred language and regional format for the app.",
       "options": {
-        "en-US": "English (United States)",
-        "zh-Hans": "简体中文",
-        "zh-Hant": "繁體中文",
-        "ja-JP": "日本語"
+        "en": "English (United States)",
+        "zh_CN": "简体中文",
+        "zh_TW": "繁體中文",
+        "ja": "日本語"
+      }
+    },
+    "theme": {
+      "title": "Theme",
+      "description": "Choose light, dark, or follow system settings.",
+      "options": {
+        "system": "System",
+        "light": "Light",
+        "dark": "Dark"
       }
     },
     "quotesColor": {
@@ -27,6 +36,29 @@
     "updates": {
       "title": "App Updates",
       "check": "Check for Update"
+    }
+  },
+  "auth": {
+    "login": {
+      "title": "Sign In",
+      "tagline": "The first open-source platform for financial agents.",
+      "providers": {
+        "google": "Google",
+        "apple": "Apple"
+      },
+      "actions": {
+        "continueWith": "Continue with {{provider}}"
+      },
+      "errors": {
+        "timeout": {
+          "title": "Login timed out",
+          "description": "Please try again."
+        },
+        "failed": {
+          "title": "Failed to sign in with {{provider}}",
+          "description": "Info: {{info}}"
+        }
+      }
     }
   },
   "settings": {
@@ -71,7 +103,32 @@
     }
   },
   "common": {
-    "back": "Back"
+    "back": "Back",
+    "loading": "Loading",
+    "settingUpEnvironment": "Setting up environment..."
+  },
+  "nav": {
+    "home": "Home",
+    "strategy": "Strategy",
+    "ranking": "Ranking",
+    "market": "Market",
+    "setting": "Setting"
+  },
+  "updates": {
+    "toast": {
+      "checking": "Checking for updates...",
+      "latest": "You are using the latest version",
+      "availableTitle": "Update available",
+      "availableDesc": "A new version ({{version}}) is available. Would you like to install it now?",
+      "install": "Install",
+      "later": "Later",
+      "downloading": "Downloading update... {{percentage}}%",
+      "installedTitle": "Update installed successfully!",
+      "installedDesc": "The app needs to restart to apply the update.",
+      "relaunch": "Relaunch",
+      "downloadFailed": "Failed to download update: {{error}}",
+      "checkFailed": "Failed to check for updates: {{error}}"
+    }
   },
   "market": {
     "title": "Agent Market"
@@ -175,6 +232,13 @@
         "tradingStrategy": "Trading strategy"
       },
       "error": "Error Creating Strategy"
+    },
+    "copy": {
+      "title": "Duplicate trading strategy",
+      "error": "Error Duplicating Strategy"
+    },
+    "toast": {
+      "published": "Strategy published successfully"
     },
     "form": {
       "strategyType": {

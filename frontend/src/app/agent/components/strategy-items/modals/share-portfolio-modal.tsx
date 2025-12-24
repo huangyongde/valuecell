@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -38,6 +39,7 @@ export interface SharePortfolioCardRef {
 const SharePortfolioModal: FC<{
   ref?: RefObject<SharePortfolioCardRef | null>;
 }> = ({ ref }) => {
+  const { t } = useTranslation();
   const cardRef = useRef<HTMLDivElement>(null);
   const [isDownloading, setIsDownloading] = useState(false);
 
@@ -84,18 +86,21 @@ const SharePortfolioModal: FC<{
       await writeFile(path, new Uint8Array(arrayBuffer));
 
       setOpen(false);
-      toast.success("Image downloaded successfully", {
+      toast.success(t("sharePortfolio.toast.downloaded"), {
         action: {
-          label: "open file",
+          label: t("sharePortfolio.toast.openFile"),
           onClick: async () => {
             return await openPath(path);
           },
         },
       });
     } catch (err) {
-      toast.error(`Failed to download image: ${JSON.stringify(err)}`, {
-        duration: 6 * 1000,
-      });
+      toast.error(
+        t("sharePortfolio.toast.downloadFailed", {
+          error: JSON.stringify(err),
+        }),
+        { duration: 6 * 1000 },
+      );
     } finally {
       setIsDownloading(false);
     }
@@ -116,13 +121,17 @@ const SharePortfolioModal: FC<{
         className="h-[600px] w-[434px] overflow-hidden border-none bg-transparent p-0 shadow-none"
         showCloseButton={false}
       >
-        <DialogTitle className="sr-only">Share Portfolio</DialogTitle>
+        <DialogTitle className="sr-only">
+          {t("sharePortfolio.title")}
+        </DialogTitle>
 
         {/* Card to be captured */}
         <div
           ref={cardRef}
-          className="relative space-y-10 overflow-hidden rounded-2xl border border-gray-200 p-8"
+          className="relative space-y-10 overflow-hidden rounded-2xl border p-8"
           style={{
+            borderColor: "rgba(0, 0, 0, 0.1)",
+            color: "#111827",
             background:
               "linear-gradient(141deg, rgba(255, 255, 255, 0.32) 2.67%, rgba(255, 255, 255, 0.00) 48.22%), radial-gradient(109.08% 168.86% at 54.34% 8.71%, #FFF 0%, #FFF 37.09%, rgba(255, 255, 255, 0.30) 94.85%, rgba(0, 0, 0, 0.00) 100%), linear-gradient(90deg, rgba(255, 36, 61, 0.85) 0.01%, rgba(0, 99, 246, 0.85) 99.77%), #FFF",
           }}
@@ -134,14 +143,17 @@ const SharePortfolioModal: FC<{
                 ValueCell
               </span>
             </div>
-            <p className="font-medium text-black/30 text-sm">
+            <p
+              className="font-medium text-sm"
+              style={{ color: "rgba(0, 0, 0, 0.3)" }}
+            >
               {TimeUtils.now().format(TIME_FORMATS.DATETIME)}
             </p>
           </div>
 
           {/* Main Return */}
           <div className="space-y-4 text-center">
-            <div className="font-normal text-gray-950 text-xl">
+            <div className="font-normal text-xl">
               {TimeUtils.formUTCDiff(data.created_at)}-Day ROI
             </div>
             <div
@@ -155,16 +167,16 @@ const SharePortfolioModal: FC<{
           </div>
 
           {/* Details Grid */}
-          <div className="grid grid-cols-[auto_1fr] gap-y-2 text-nowrap text-gray-950 text-sm [&>span]:text-right">
+          <div className="grid grid-cols-[auto_1fr] gap-y-2 text-nowrap text-sm [&>span]:text-right">
             <p>P&L</p>
             <span style={{ color: stockColors[getChangeType(data.total_pnl)] }}>
               {formatChange(data.total_pnl, "", 2)}
             </span>
 
-            <p>Model</p>
+            <p>{t("sharePortfolio.fields.model")}</p>
             <span>{data.llm_model_id}</span>
 
-            <p>Exchange</p>
+            <p>{t("sharePortfolio.fields.exchange")}</p>
             <span className="ml-auto flex items-center gap-1">
               <PngIcon
                 src={
@@ -177,19 +189,31 @@ const SharePortfolioModal: FC<{
               {data.exchange_id}
             </span>
 
-            <p>Strategy</p>
+            <p>{t("sharePortfolio.fields.strategy")}</p>
             <span>{data.strategy_type}</span>
           </div>
 
-          <div className="flex items-center justify-between rounded-2xl border border-white/60 bg-white/20 p-4 shadow-[0,4px,20px,0,rgba(113,113,113,0.08)] backdrop-blur-sm">
+          <div
+            className="flex items-center justify-between rounded-2xl border p-4 shadow-[0,4px,20px,0,rgba(113,113,113,0.08)] backdrop-blur-sm"
+            style={{
+              borderColor: "rgba(255, 255, 255, 0.6)",
+              backgroundColor: "rgba(255, 255, 255, 0.2)",
+            }}
+          >
             <div className="space-y-1">
-              <div className="font-medium text-black/30 text-sm">Publisher</div>
-              <span className="font-normal text-base text-gray-950">
-                {name}
-              </span>
+              <div
+                className="font-medium text-sm"
+                style={{ color: "rgba(0, 0, 0, 0.3)" }}
+              >
+                Publisher
+              </div>
+              <span className="font-normal text-base">{name}</span>
             </div>
 
-            <div className="font-medium text-black/30 text-sm">
+            <div
+              className="font-medium text-sm"
+              style={{ color: "rgba(0, 0, 0, 0.3)" }}
+            >
               ValueCell.ai
             </div>
           </div>
@@ -199,14 +223,14 @@ const SharePortfolioModal: FC<{
         <div className="mt-6 flex gap-4">
           <Button
             variant="outline"
-            className="h-12 flex-1 rounded-xl border-gray-200 bg-white font-medium text-base hover:bg-gray-50"
+            className="h-12 flex-1 rounded-xl border-border bg-card font-medium text-base hover:bg-muted"
             onClick={() => setOpen(false)}
           >
-            Cancel
+            {t("strategy.action.cancel")}
           </Button>
 
           <Button
-            className="h-12 flex-1 rounded-xl bg-gray-950 font-medium text-base text-white hover:bg-gray-800"
+            className="h-12 flex-1 rounded-xl bg-primary font-medium text-base text-primary-foreground hover:bg-primary/90"
             onClick={handleDownload}
             disabled={isDownloading}
           >
@@ -215,7 +239,7 @@ const SharePortfolioModal: FC<{
             ) : (
               <Download className="mr-2 size-5" />
             )}
-            Download
+            {t("sharePortfolio.action.download")}
           </Button>
         </div>
       </DialogContent>
